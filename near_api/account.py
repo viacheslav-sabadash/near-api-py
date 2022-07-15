@@ -1,5 +1,6 @@
 import itertools
 import json
+from typing import Optional
 
 import base58
 
@@ -28,9 +29,11 @@ class Account(object):
     ):
         self._provider = provider
         self._signer = signer
-        self._account_id = account_id
-        self._account: dict = provider.get_account(account_id)
-        self._access_key: dict = provider.get_access_key(account_id, self._signer.key_pair.encoded_public_key())
+        self._contract_id = contract_id
+        self._account: dict = provider.get_account(contract_id)
+        if self._signer:
+            self._access_key: dict = provider.get_access_key(contract_id, self._signer.key_pair.encoded_public_key())
+        print(self._access_key)
         # print(account_id, self._account, self._access_key)
 
     def _sign_and_submit_tx(self, receiver_id: str, actions: list['transactions.Action']) -> dict:
@@ -38,7 +41,11 @@ class Account(object):
         block_hash = self._provider.get_status()['sync_info']['latest_block_hash']
         block_hash = base58.b58decode(block_hash.encode('utf8'))
         serialized_tx = transactions.sign_and_serialize_transaction(
-            receiver_id, self._access_key['nonce'], actions, block_hash, self._signer)
+            receiver_id,
+            self._access_key['nonce'],
+            actions, block_hash,
+            self._signer
+        )
         result: dict = self._provider.send_tx_and_wait(serialized_tx, 10)
         for outcome in itertools.chain([result['transaction_outcome']], result['receipts_outcome']):
             for log in outcome['outcome']['logs']:
@@ -49,7 +56,7 @@ class Account(object):
 
     @property
     def account_id(self) -> str:
-        return self._account_id
+        return self._contract_id
 
     @property
     def signer(self) -> 'near_api.signer.Signer':
@@ -71,13 +78,12 @@ class Account(object):
         """Fetch state for given account."""
         self._account = self.provider.get_account(self.account_id)
 
-    def send_money(self, account_id: str, amount: int):
+    def send_money(self, amount: int):
         """Sends funds to given account_id given amount."""
-        return self._sign_and_submit_tx(account_id, [transactions.create_transfer_action(amount)])
+        return self._sign_and_submit_tx(self.account_id, [transactions.create_transfer_action(amount)])
 
     def function_call(
             self,
-            contract_id: str,
             method_name: str,
             args: dict,
             gas: int = DEFAULT_ATTACHED_GAS,
@@ -86,29 +92,28 @@ class Account(object):
         """NEAR call method."""
         args = json.dumps(args).encode('utf8')
         return self._sign_and_submit_tx(
-            contract_id,
+            self.account_id,
             [transactions.create_function_call_action(method_name, args, gas, amount)]
         )
 
-    def create_account(self, account_id: str, public_key: str, initial_balance: int) -> dict:
+    def create_account(self, public_key: str, initial_balance: int) -> dict:
         actions = [
             transactions.create_create_account_action(),
             transactions.create_full_access_key_action(public_key),
             transactions.create_transfer_action(initial_balance)]
-        return self._sign_and_submit_tx(account_id, actions)
+        return self._sign_and_submit_tx(self.account_id, actions)
 
     def delete_account(self, beneficiary_id: str) -> dict:
-        return self._sign_and_submit_tx(self._account_id, [transactions.create_delete_account_action(beneficiary_id)])
+        return self._sign_and_submit_tx(self.account_id, [transactions.create_delete_account_action(beneficiary_id)])
 
     def deploy_contract(self, contract_code: bytes) -> dict:
-        return self._sign_and_submit_tx(self._account_id, [transactions.create_deploy_contract_action(contract_code)])
+        return self._sign_and_submit_tx(self.account_id, [transactions.create_deploy_contract_action(contract_code)])
 
     def stake(self, public_key: str, amount: int) -> dict:
-        return self._sign_and_submit_tx(self._account_id, [transactions.create_staking_action(amount, public_key)])
+        return self._sign_and_submit_tx(self.account_id, [transactions.create_staking_action(amount, public_key)])
 
     def create_and_deploy_contract(
             self,
-            contract_id: str,
             public_key: str,
             contract_code: bytes,
             initial_balance: int
@@ -118,15 +123,14 @@ class Account(object):
                       transactions.create_transfer_action(initial_balance),
                       transactions.create_deploy_contract_action(contract_code)
                   ] + ([transactions.create_full_access_key_action(public_key)] if public_key is not None else [])
-        return self._sign_and_submit_tx(contract_id, actions)
+        return self._sign_and_submit_tx(self.account_id, actions)
 
     def create_deploy_and_init_contract(
             self,
-            contract_id: str,
             public_key: str,
             contract_code: bytes,
             initial_balance: int,
-            args: bytes,
+            args: dict,
             gas: int = DEFAULT_ATTACHED_GAS,
             init_method_name: str = "new"
     ) -> dict:
@@ -137,11 +141,11 @@ class Account(object):
                       transactions.create_deploy_contract_action(contract_code),
                       transactions.create_function_call_action(init_method_name, args, gas, 0)
                   ] + ([transactions.create_full_access_key_action(public_key)] if public_key is not None else [])
-        return self._sign_and_submit_tx(contract_id, actions)
+        return self._sign_and_submit_tx(self.account_id, actions)
 
     def view_function(self, method_name: str, args: Optional[dict] = None) -> dict:
         """NEAR view method."""
-        result = self._provider.view_call(contract_id, method_name, json.dumps(args).encode('utf8'))
+        result = self._provider.view_call(self.account_id, method_name, json.dumps(args).encode('utf8'))
         if "error" in result:
             raise ViewFunctionError(result['error'])
         result['result'] = json.loads(''.join([chr(x) for x in result['result']]))
